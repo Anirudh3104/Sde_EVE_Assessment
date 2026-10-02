@@ -1,0 +1,103 @@
+// EVE Diagnostics: ER diagram + DB schema, in Eraser "entity relationship diagram" syntax.
+// Paste into eraser.io -> New diagram -> Entity relationship (diagram-as-code).
+// Source of truth: app/models/*.py and alembic/versions/0001_initial.py
+
+title EVE Diagnostics - Database Schema
+
+users [icon: user, color: blue] {
+  id uuid pk
+  email varchar(320) unique
+  password_hash varchar(128)
+  full_name varchar(200)
+  role user_role "PATIENT | ADMIN"
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+centres [icon: map-pin, color: green] {
+  id uuid pk
+  name varchar(200)
+  address varchar(500)
+  city varchar(100) "indexed; UNIQUE(name, city)"
+  pincode varchar(10) "nullable"
+  is_active boolean "soft delete"
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+diagnostic_tests [icon: activity, color: green] {
+  id uuid pk
+  code varchar(32) unique "e.g. CBC"
+  name varchar(200)
+  description text "nullable"
+  is_active boolean "soft delete"
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+centre_tests [icon: tag, color: green] {
+  id uuid pk
+  centre_id uuid fk "UNIQUE(centre_id, test_id)"
+  test_id uuid fk
+  price numeric(10,2) "CHECK price > 0"
+  is_available boolean
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+bookings [icon: calendar, color: orange] {
+  id uuid pk
+  user_id uuid fk
+  centre_id uuid fk
+  test_id uuid fk
+  appointment_at timestamptz
+  amount numeric(10,2) "price snapshot, CHECK > 0"
+  currency varchar(3) "default INR"
+  status booking_status "PENDING | CONFIRMED | FAILED | CANCELLED"
+  cancelled_at timestamptz "nullable"
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+payments [icon: credit-card, color: purple] {
+  id uuid pk
+  booking_id uuid fk unique "one payment per booking"
+  user_id uuid fk
+  amount numeric(10,2)
+  currency varchar(3)
+  status payment_status "PROCESSING | SUCCESS | FAILED"
+  idempotency_key varchar(255) "UNIQUE(user_id, idempotency_key)"
+  request_hash varchar(64) "sha256 of request body"
+  provider_ref varchar(64) unique
+  failure_reason varchar(255) "nullable"
+  refund_status refund_status "nullable: REFUND_PENDING"
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+webhook_events [icon: zap, color: purple] {
+  id uuid pk
+  event_id varchar(64) unique "idempotency guarantee"
+  payment_id uuid fk
+  status payment_status
+  payload jsonb
+  signature_valid boolean
+  result webhook_event_result "APPLIED | IGNORED"
+  received_at timestamptz
+  processed_at timestamptz "nullable"
+}
+
+// Relationships (all foreign keys are ON DELETE RESTRICT)
+users.id < bookings.user_id
+users.id < payments.user_id
+centres.id < centre_tests.centre_id
+diagnostic_tests.id < centre_tests.test_id
+centres.id < bookings.centre_id
+diagnostic_tests.id < bookings.test_id
+bookings.id - payments.booking_id
+payments.id < webhook_events.payment_id
+
+// Notable indexes / constraints not visible above:
+// - UNIQUE INDEX uq_bookings_active_slot (user_id, centre_id, test_id, appointment_at)
+//     WHERE status IN ('PENDING', 'CONFIRMED')   -> no double-booking a slot
+// - INDEX ix_bookings_user_created (user_id, created_at), ix_bookings_status
